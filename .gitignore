@@ -1,0 +1,15 @@
+# Exclude Python virtual environment
+venv/
+ENV/
+
+# Exclude compiled Python files and caches
+__pycache__/
+*.pyc
+
+# Exclude heavy dataset files (Your friend will place these locally on their machine)
+data/*.mat
+data/*.zip
+
+
+.DS_Store
+Thumbs.db
