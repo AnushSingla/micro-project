@@ -12,7 +12,7 @@ Follow these steps to set up your local development environment after cloning th
 
 ```bash
 git clone <YOUR_GITHUB_REPOSITORY_URL>
-cd "P300 EEG Signal"
+cd "micro-project"
 ```
 
 ### 2. Create and Activate Virtual Environment
@@ -43,7 +43,7 @@ Because the raw MATLAB benchmark files (`.mat`) total ~290 MB, they are excluded
 2. Copy `Subject_A_Train.mat` into the local `data/` folder:
 
 ```
-P300 EEG Signal/
+micro-project/
 └── data/
     ├── __init__.py
     ├── bci_dataset_loader.py
@@ -98,7 +98,7 @@ git push origin main
 ## 📁 Repository Structure Overview
 
 ```
-P300 EEG Signal/
+micro=project/
 ├── .gitignore                    # Excludes venv, cache, and raw dataset files
 ├── requirements.txt              # Production Python dependencies
 ├── README.md                     # Setup instructions
