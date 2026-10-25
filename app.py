@@ -1,5 +1,6 @@
 import os
 import sys
+import gc
 import html as html_lib
 import numpy as np
 import pandas as pd
@@ -130,20 +131,43 @@ def load_pipeline_components():
     return artifacts['model'], artifacts['scaler']
 
 
-@st.cache_data
+@st.cache_resource(show_spinner=False)
 def load_and_preprocess_dataset():
-    data_path = DATA_FILE
-    data = load_bci_competition_iii(data_path)
-    filtered_signal = bandpass_filter(data['signal'], sfreq=data['sfreq'])
-    X_raw, y = extract_p300_epochs(filtered_signal, data['events'], sfreq=data['sfreq'])
-    return data, filtered_signal, X_raw, y
+    """Load, filter and epoch the EEG, then keep only what the app needs.
+
+    cache_resource (not cache_data) avoids pickling a second copy, and the full
+    64 x 662,490 recordings are dropped after epoching to stay inside the
+    memory limit of free hosting.
+    """
+    n_preview = 1200
+    data = load_bci_competition_iii(DATA_FILE)
+    sfreq = data['sfreq']
+    events = data['events']
+
+    filtered = bandpass_filter(data['signal'], sfreq=sfreq)
+    X_raw, y = extract_p300_epochs(filtered, events, sfreq=sfreq)
+
+    # Small previews for the waveform tab (first 1200 samples of every channel)
+    preview = {
+        'signal': np.asarray(data['signal'][:, :n_preview], dtype=np.float32),
+        'sfreq': sfreq,
+        'events': events,
+    }
+    preview_filtered = np.asarray(filtered[:, :n_preview], dtype=np.float32)
+    X_raw = np.asarray(X_raw, dtype=np.float32)
+
+    del filtered, data
+    gc.collect()
+    return preview, preview_filtered, X_raw, y
 
 
 
 # ---------------------------------------------------- dataset download (Drive)
 DATA_FILE = "data/Subject_A_Train.mat"
-
-GDRIVE_FILE_ID_FALLBACK = "1bjJT5qaF9xnAD_fLn7h3OZrUWJ7e3qPk"
+# Google Drive file ID: the long string in the share link
+# https://drive.google.com/file/d/<FILE_ID>/view
+# Prefer storing it in Streamlit secrets as GDRIVE_FILE_ID; otherwise paste it below.
+GDRIVE_FILE_ID_FALLBACK = "PASTE_YOUR_FILE_ID_HERE"
 
 
 @st.cache_resource(show_spinner="Downloading dataset from Google Drive (first run only)...")
