@@ -5,7 +5,6 @@ import html as html_lib
 import numpy as np
 import pandas as pd
 import streamlit as st
-import joblib
 
 try:
     import plotly.graph_objects as go
@@ -15,11 +14,6 @@ except ImportError:  # falls back to Streamlit's built-in charts
 
 # Add src to system path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
-
-from data.bci_dataset_loader import load_bci_competition_iii
-from src.preprocessing import bandpass_filter
-from src.epoch_extraction import extract_p300_epochs
-from src.feature_extraction import prepare_lda_features
 
 # ---------------------------------------------------------------- page setup
 st.set_page_config(
@@ -123,6 +117,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 # ------------------------------------------------------------ pipeline loading
 @st.cache_resource
 def load_pipeline_components():
+    import joblib
     model_path = "models/lda_p300_model.pkl"
     if not os.path.exists(model_path):
         st.error("Model file missing. Run 'python src/lda_classifier.py' first, then reload this page.")
@@ -139,6 +134,10 @@ def load_and_preprocess_dataset():
     64 x 662,490 recordings are dropped after epoching to stay inside the
     memory limit of free hosting.
     """
+    from data.bci_dataset_loader import load_bci_competition_iii
+    from src.preprocessing import bandpass_filter
+    from src.epoch_extraction import extract_p300_epochs
+
     n_preview = 1200
     data = load_bci_competition_iii(DATA_FILE)
     sfreq = data['sfreq']
@@ -164,6 +163,9 @@ def load_and_preprocess_dataset():
 
 # ---------------------------------------------------- dataset download (Drive)
 DATA_FILE = "data/Subject_A_Train.mat"
+# Small precomputed file (made by make_demo_cache.py). When present, the app uses it
+# and never touches the 178 MB recording, which keeps hosting memory low.
+CACHE_FILE = "data/demo_cache.npz"
 # Google Drive file ID: the long string in the share link
 # https://drive.google.com/file/d/<FILE_ID>/view
 # Prefer storing it in Streamlit secrets as GDRIVE_FILE_ID; otherwise paste it below.
@@ -196,6 +198,12 @@ def ensure_dataset():
         st.stop()
     return DATA_FILE
 
+@st.cache_resource(show_spinner=False)
+def load_demo_cache():
+    z = np.load(CACHE_FILE)
+    return {k: z[k] for k in z.files}
+
+
 # -------------------------------------------------------------------- helpers
 def style_fig(fig, height, legend=False):
     fig.update_layout(
@@ -216,7 +224,7 @@ def score_bars(labels, values, winner):
     if HAS_PLOTLY:
         colors = [SIGNAL if i == winner else BAR for i in range(len(values))]
         fig = go.Figure(go.Bar(x=labels, y=values, marker_color=colors))
-        st.plotly_chart(style_fig(fig, 210), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(style_fig(fig, 210), width='stretch', config={"displayModeBar": False})
     else:
         st.bar_chart(pd.DataFrame({"Score": values}, index=labels))
 
@@ -232,7 +240,7 @@ def history_chart(hist, labels, winner):
                 line=dict(color=SIGNAL if is_win else "#3a4560", width=3 if is_win else 1.5),
             ))
         fig.update_xaxes(title_text="Repetitions combined", dtick=1 if len(reps) <= 15 else None)
-        st.plotly_chart(style_fig(fig, 240), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(style_fig(fig, 240), width='stretch', config={"displayModeBar": False})
     else:
         st.line_chart(pd.DataFrame(hist, index=reps, columns=labels))
 
@@ -288,35 +296,49 @@ n_trials_to_accumulate = st.sidebar.slider(
 )
 
 # ---------------------------------------------------------- load pipeline/data
-lda_model, scaler = load_pipeline_components()
-ensure_dataset()
-with st.spinner("Processing continuous EEG data..."):
-    dataset, filtered_signal, X_raw, y = load_and_preprocess_dataset()
+max_flashes = n_trials_to_accumulate * 12   # each repetition = 12 flashes
+USE_CACHE = os.path.exists(CACHE_FILE)
 
-# Filter events and epochs for the selected trial
-events = dataset['events']
-trial_epochs = []
-trial_events = []
+if USE_CACHE:
+    # Fast path: classifier scores were computed once with make_demo_cache.py
+    cache = load_demo_cache()
+    dataset = {'signal': cache['signal_preview'], 'sfreq': float(cache['sfreq'])}
+    filtered_signal = cache['filtered_preview']
 
-for i, ev in enumerate(events):
-    if ev['trial'] == trial_idx:
-        trial_epochs.append(X_raw[i])
-        trial_events.append(ev)
+    mask = cache['trial'] == trial_idx
+    if not mask.any():
+        st.warning("No flashes found for this character. Choose another character in the sidebar.")
+        st.stop()
+    scores = cache['scores'][mask][:max_flashes]
+    active_events = [{'stimulus_code': int(c)} for c in cache['code'][mask][:max_flashes]]
+    st.sidebar.caption("Using precomputed classifier scores.")
+else:
+    # Full path: run the whole pipeline on the raw recording (needs the .mat file)
+    from src.feature_extraction import prepare_lda_features
 
-if not trial_epochs:
-    st.warning("No flashes found for this character. Choose another character in the sidebar.")
-    st.stop()
+    lda_model, scaler = load_pipeline_components()
+    ensure_dataset()
+    with st.spinner("Processing continuous EEG data..."):
+        dataset, filtered_signal, X_raw, y = load_and_preprocess_dataset()
 
-trial_epochs = np.array(trial_epochs)
+    events = dataset['events']
+    trial_epochs = []
+    trial_events = []
+    for i, ev in enumerate(events):
+        if ev['trial'] == trial_idx:
+            trial_epochs.append(X_raw[i])
+            trial_events.append(ev)
 
-# Limit to the selected repetition count (each repetition = 12 flashes)
-max_flashes = n_trials_to_accumulate * 12
-active_epochs = trial_epochs[:max_flashes]
-active_events = trial_events[:max_flashes]
+    if not trial_epochs:
+        st.warning("No flashes found for this character. Choose another character in the sidebar.")
+        st.stop()
 
-# Features and LDA scores
-X_features, _ = prepare_lda_features(active_epochs, scaler=scaler, fit_scaler=False)
-scores = lda_model.decision_function(X_features)
+    trial_epochs = np.array(trial_epochs)
+    active_epochs = trial_epochs[:max_flashes]
+    active_events = trial_events[:max_flashes]
+
+    X_features, _ = prepare_lda_features(active_epochs, scaler=scaler, fit_scaler=False)
+    scores = lda_model.decision_function(X_features)
 
 # Accumulate scores repetition by repetition
 n_reps = max(1, int(np.ceil(len(scores) / 12)))
@@ -360,8 +382,8 @@ with col_result:
 
         b1, b2 = st.columns(2)
         b1.button("Add to message", type="primary", on_click=add_to_message,
-                  args=(decoded_char,), use_container_width=True)
-        b2.button("Clear message", on_click=clear_message, use_container_width=True)
+                  args=(decoded_char,), width='stretch')
+        b2.button("Clear message", on_click=clear_message, width='stretch')
 
         if st.session_state.message:
             st.markdown(
@@ -420,7 +442,7 @@ with st.container(border=True):
             fig.add_trace(go.Scatter(x=t, y=filt, mode="lines", name="Filtered 0.5–20 Hz (µV)",
                                      line=dict(color=SIGNAL, width=1.6)))
             fig.update_xaxes(title_text="Time (s)")
-            st.plotly_chart(style_fig(fig, 300, legend=True), use_container_width=True,
+            st.plotly_chart(style_fig(fig, 300, legend=True), width='stretch',
                             config={"displayModeBar": False})
         else:
             st.line_chart(pd.DataFrame({
